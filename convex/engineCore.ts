@@ -325,6 +325,7 @@ export interface MatchedComp {
   address: string;
   price: number;
   sf: number;
+  lotSF?: number | null;
   psf: number;
   sold: string;
   cond: string;
@@ -333,9 +334,42 @@ export interface MatchedComp {
   verified: boolean;
   sameMarket?: boolean;
   score: number;
+  reasons: string[];
+  warnings: string[];
 }
 
 export type WaterTier = "dry" | "canal" | "open_bay";
+
+export interface ExcludedComp {
+  saleId: string;
+  address: string;
+  price?: number;
+  sf?: number | null;
+  psf?: number | null;
+  sold?: string;
+  reason: string;
+  reasons: string[];
+}
+
+export interface CompMatchSummary {
+  selectedCount: number;
+  sameMarketCount: number;
+  verifiedCount: number;
+  medianPsf: number | null;
+  excludedCount: number;
+}
+
+export interface CompMatchResult {
+  selected: MatchedComp[];
+  excluded: ExcludedComp[];
+  summary: CompMatchSummary;
+}
+
+export interface SubjectCompProfile {
+  livingSF?: number | null;
+  lotSF?: number | null;
+  landFloor?: [number, number] | null;
+}
 
 export function waterTier(t: string): WaterTier {
   const s = (t || "").toLowerCase();
@@ -343,6 +377,201 @@ export function waterTier(t: string): WaterTier {
   if (s.includes("canal") || s.includes("lake") || s.includes("waterway")) return "canal";
   if (s.includes("bay") || s.includes("ocean")) return "open_bay";
   return "canal"; // "verify" etc — assume protected water, not open bay
+}
+
+function similarityRatio(row: number | null | undefined, subject: number | null | undefined) {
+  if (!row || !subject) return null;
+  return Math.abs(row - subject) / subject;
+}
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+export function evaluateComps(
+  sales: SaleRow[],
+  isWf: boolean,
+  cond: string,
+  microName: string | null,
+  topN = 5,
+  subjectClass: "sfr" | "condo" = "sfr",
+  subjectTier: WaterTier = "dry",
+  subject: SubjectCompProfile = {},
+): CompMatchResult {
+  const out: MatchedComp[] = [];
+  const excluded: ExcludedComp[] = [];
+  const today = new Date();
+  const exclude = (r: SaleRow, reason: string, reasons: string[] = [reason]) => {
+    excluded.push({
+      saleId: r.saleId,
+      address: r.address,
+      price: r.price,
+      sf: r.livingSF,
+      psf: r.price && r.livingSF ? Math.round(r.price / r.livingSF) : null,
+      sold: r.soldDate,
+      reason,
+      reasons,
+    });
+  };
+
+  for (const r of sales) {
+    if (!r.price || !r.livingSF) {
+      exclude(r, "missing sale price or living area");
+      continue;
+    }
+    // garbage rows (partial-interest transfers, data errors) never comp
+    const psf = r.price / r.livingSF;
+    if (r.price < 100_000 || psf < 150) {
+      exclude(r, "below minimum arm's-length sale sanity threshold");
+      continue;
+    }
+    // condos only comp against condos, houses against houses
+    if ((r.propertyClass ?? "sfr") !== subjectClass) {
+      exclude(r, `property class mismatch: ${(r.propertyClass ?? "sfr")} sale for ${subjectClass} subject`);
+      continue;
+    }
+    const rowTier = r.waterfront ? waterTier(r.waterType) : "dry";
+    if (isWf && !r.waterfront) {
+      exclude(r, "dry-lot sale cannot price a waterfront subject");
+      continue;
+    }
+    if (!isWf && r.waterfront) {
+      exclude(r, "waterfront sale would overprice a dry-lot subject");
+      continue;
+    }
+    if (subject.landFloor && isWf && r.waterfront && r.price < subject.landFloor[0] * 0.85) {
+      exclude(r, "waterfront sale is materially below subject land-floor support");
+      continue;
+    }
+
+    let score = 0;
+    const reasons: string[] = [];
+    const warnings: string[] = [];
+    const sameMarket = marketMatches(r.market, microName);
+    if (sameMarket) {
+      score += 4;
+      reasons.push("same micro-market");
+    } else {
+      score -= 2;
+      warnings.push("outside subject micro-market");
+    }
+    score += 3;
+    reasons.push(isWf ? "waterfront sale" : "dry-lot sale");
+    // water-tier match: canal sales don't price open-bay trophy and vice versa
+    if (subjectTier !== "dry" && rowTier !== "dry") {
+      if (rowTier === subjectTier) {
+        score += 3;
+        reasons.push(`water tier matches: ${rowTier}`);
+      } else {
+        score -= 4;
+        warnings.push(`water tier differs: ${rowTier} sale for ${subjectTier} subject`);
+      }
+    }
+    const saleCond = r.conditionClass.toLowerCase();
+    if (saleCond.includes(cond)) {
+      score += 1;
+      reasons.push(`condition aligns: ${r.conditionClass}`);
+    } else if (cond === "dated" && /new|renovated/.test(saleCond)) {
+      score -= 2;
+      warnings.push("superior condition sale may overstate as-is value");
+    } else if ((cond === "new" || cond === "renovated") && /dated|original|teardown/.test(saleCond)) {
+      score -= 2;
+      warnings.push("inferior condition sale may understate improved value");
+    }
+
+    const sfDelta = similarityRatio(r.livingSF, subject.livingSF);
+    if (sfDelta !== null) {
+      if (sfDelta <= 0.2) {
+        score += 3;
+        reasons.push("similar living area");
+      } else if (sfDelta <= 0.35) {
+        score += 1;
+        reasons.push("usable living-area bracket");
+      } else if (sfDelta <= 0.5) {
+        score -= 1;
+        warnings.push("wide living-area adjustment needed");
+      } else {
+        score -= 3;
+        warnings.push("major living-area mismatch");
+      }
+    }
+    const lotDelta = similarityRatio(r.lotSF, subject.lotSF);
+    if (lotDelta !== null) {
+      if (lotDelta <= 0.25) {
+        score += 2;
+        reasons.push("similar lot size");
+      } else if (lotDelta <= 0.5) {
+        score += 1;
+        reasons.push("usable lot-size bracket");
+      } else {
+        score -= 2;
+        warnings.push("major lot-size mismatch");
+      }
+    }
+    const d = parseSoldDate(r.soldDate);
+    if (d) {
+      const age = (today.getTime() - d.getTime()) / 86400000;
+      if (age <= 180) {
+        score += 2;
+        reasons.push("recent sale");
+      } else if (age <= 400) {
+        score += 1;
+        reasons.push("current-cycle sale");
+      } else if (age > 730) {
+        score -= 2;
+        warnings.push("older than two years");
+      }
+    } else {
+      warnings.push("sale date could not be parsed");
+    }
+    if (r.verified) {
+      score += 2;
+      reasons.push("verified source");
+    } else {
+      warnings.push("secondary-source sale; verify in MLS/county");
+    }
+    if (score < 5) {
+      exclude(r, "low similarity score after feature checks", [...reasons, ...warnings]);
+      continue;
+    }
+    out.push({
+      saleId: r.saleId,
+      address: r.address,
+      price: r.price,
+      sf: r.livingSF,
+      lotSF: r.lotSF,
+      psf: Math.round(psf),
+      sold: r.soldDate,
+      cond: r.conditionClass,
+      wf: r.waterfront,
+      waterType: r.waterType,
+      verified: r.verified,
+      sameMarket,
+      score,
+      reasons,
+      warnings,
+    });
+  }
+  out.sort((a, b) => b.score - a.score || a.address.localeCompare(b.address));
+  let selected = out.slice(0, topN);
+  if (subjectTier !== "dry") {
+    const tierMatched = out.filter((c) => waterTier((c as any).waterType ?? "") === subjectTier);
+    if (tierMatched.length >= 2) selected = tierMatched.slice(0, topN);
+  }
+  return {
+    selected,
+    excluded: excluded.slice(0, 25),
+    summary: {
+      selectedCount: selected.length,
+      sameMarketCount: selected.filter((c) => c.sameMarket).length,
+      verifiedCount: selected.filter((c) => c.verified).length,
+      medianPsf: median(selected.map((c) => c.psf)),
+      excludedCount: excluded.length,
+    },
+  };
 }
 
 export function matchComps(
@@ -353,54 +582,10 @@ export function matchComps(
   topN = 5,
   subjectClass: "sfr" | "condo" = "sfr",
   subjectTier: WaterTier = "dry",
+  subject: SubjectCompProfile = {},
 ): MatchedComp[] {
-  const out: MatchedComp[] = [];
-  const today = new Date();
-  for (const r of sales) {
-    if (!r.price || !r.livingSF) continue;
-    // garbage rows (partial-interest transfers, data errors) never comp
-    if (r.price < 100_000 || r.price / r.livingSF < 150) continue;
-    // condos only comp against condos, houses against houses
-    if ((r.propertyClass ?? "sfr") !== subjectClass) continue;
-    let score = 0;
-    const sameMarket = marketMatches(r.market, microName);
-    if (sameMarket) score += 3;
-    if (r.waterfront === isWf) score += 2;
-    else score -= 2;
-    // water-tier match: canal sales don't price open-bay trophy and vice versa
-    const rowTier = r.waterfront ? waterTier(r.waterType) : "dry";
-    if (subjectTier !== "dry" && rowTier !== "dry") {
-      score += rowTier === subjectTier ? 3 : -3;
-    }
-    if (r.conditionClass.toLowerCase().includes(cond)) score += 1;
-    const d = parseSoldDate(r.soldDate);
-    if (d) {
-      const age = (today.getTime() - d.getTime()) / 86400000;
-      if (age <= 180) score += 2;
-      else if (age <= 400) score += 1;
-    }
-    if (score < 3) continue;
-    out.push({
-      saleId: r.saleId,
-      address: r.address,
-      price: r.price,
-      sf: r.livingSF,
-      psf: Math.round(r.price / r.livingSF),
-      sold: r.soldDate,
-      cond: r.conditionClass,
-      wf: r.waterfront,
-      waterType: r.waterType,
-      verified: r.verified,
-      sameMarket,
-      score,
-    });
-  }
-  out.sort((a, b) => b.score - a.score || a.address.localeCompare(b.address));
-  if (subjectTier !== "dry") {
-    const tierMatched = out.filter((c) => waterTier((c as any).waterType ?? "") === subjectTier);
-    if (tierMatched.length >= 2) return tierMatched.slice(0, topN);
-  }
-  return out.slice(0, topN);
+  return evaluateComps(sales, isWf, cond, microName, topN, subjectClass, subjectTier, subject)
+    .selected;
 }
 
 export interface Valuation {
@@ -419,6 +604,9 @@ export interface Valuation {
   mostLikely: number;
   offers: { opening: number; target: number; maximum: number };
   comps: MatchedComp[];
+  excludedComps: ExcludedComp[];
+  compSummary: CompMatchSummary;
+  reasoning: string[];
   confidence: string;
   countyMarketValue: number | null;
 }
@@ -460,7 +648,12 @@ export function valueProperty(
     : cfg && landRate >= cfg.land_rate_lot_sf.open_bay_wf[0]
       ? "open_bay"
       : "canal";
-  const comps = matchComps(sales, isWf, cond, microName, 5, isCondo ? "condo" : "sfr", subjectTier);
+  const compEval = evaluateComps(sales, isWf, cond, microName, 5, isCondo ? "condo" : "sfr", subjectTier, {
+    livingSF: sf,
+    lotSF: lot,
+    landFloor,
+  });
+  const comps = compEval.selected;
   // Comp-weighted pricing: with 2+ same-market comps, actual sold $/SF beats
   // static bands — that's the "dialed-in" value. Bands remain the fallback.
   const compPsfs = comps
@@ -507,6 +700,17 @@ export function valueProperty(
         : sameMarketN >= 1
           ? "B-"
           : "C";
+  const reasoning = [
+    `Subject classified as ${microName ?? "unknown market"} / ${isCondo ? "condo" : "single-family"} / ${subjectTier}.`,
+    `Waterfront decision: ${isWf ? "yes" : "no"} (${wfWhy}).`,
+    pricedFromComps
+      ? `Valuation uses selected same-market sale $/SF range after feature checks: $${trimmed[0]}-$${trimmed[trimmed.length - 1]}/SF.`
+      : "Valuation falls back to market bands because fewer than two same-market sales passed feature checks.",
+    landFloor
+      ? `Land floor support is $${landFloor[0].toLocaleString()}-$${landFloor[1].toLocaleString()} before finished-home overlay.`
+      : "No land floor applied for this property type.",
+    `${compEval.summary.selectedCount} comps selected; ${compEval.summary.excludedCount} sales excluded for class, water, land-floor, size, age, or similarity issues.`,
+  ];
   return {
     micro: microName,
     propertyClass: isCondo ? "condo" : "sfr",
@@ -533,6 +737,9 @@ export function valueProperty(
       maximum: round10k(mostLikely * RULES.offer_ladder.maximum),
     },
     comps,
+    excludedComps: compEval.excluded,
+    compSummary: compEval.summary,
+    reasoning,
     confidence: conf,
     countyMarketValue: county.marketValue,
   };

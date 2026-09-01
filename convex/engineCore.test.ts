@@ -100,6 +100,7 @@ test("matchComps filters property class and rewards same-market waterfront comps
   assert.equal(comps.some((comp) => comp.saleId === "condo"), false);
   assert.equal(comps[0].saleId, "same-market");
   assert.equal(comps[0].sameMarket, true);
+  assert.ok(comps[0].reasons.length > 0);
 });
 
 test("valueProperty can price Maple Rd from same-market imported sales", () => {
@@ -115,4 +116,44 @@ test("valueProperty can price Maple Rd from same-market imported sales", () => {
   assert.equal(result.waterfront, true);
   assert.match(result.dataNote ?? "", /Priced from 2 same-market sales/);
   assert.notEqual(result.confidence, "C");
+  assert.ok(result.reasoning.length >= 3);
+  assert.equal(result.compSummary.sameMarketCount, 2);
+});
+
+test("valueProperty excludes waterfront sales below subject land floor", () => {
+  const result = valueProperty(maple, [
+    sale({
+      saleId: "too-low",
+      address: "1900 Keystone Blvd",
+      price: 1200000,
+      livingSF: 1443,
+      lotSF: 9375,
+      market: "keystone",
+    }),
+    sale({
+      saleId: "usable-1",
+      address: "2055 Keystone Blvd",
+      price: 2373900,
+      livingSF: 3204,
+      lotSF: 9900,
+      market: "keystone",
+    }),
+    sale({
+      saleId: "usable-2",
+      address: "2085 Keystone Blvd",
+      price: 5300000,
+      livingSF: 4922,
+      lotSF: 10500,
+      market: "keystone",
+    }),
+  ]);
+
+  assert.equal("error" in result, false);
+  if ("error" in result) return;
+  assert.equal(result.comps.some((comp) => comp.saleId === "too-low"), false);
+  assert.equal(result.excludedComps.some((comp) => comp.saleId === "too-low"), true);
+  assert.match(
+    result.excludedComps.find((comp) => comp.saleId === "too-low")?.reason ?? "",
+    /land-floor/i,
+  );
 });
