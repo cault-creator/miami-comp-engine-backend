@@ -48,7 +48,9 @@ const schema = defineSchema({
     error: v.optional(v.string()),
     createdBy: v.optional(v.string()),
     createdAt: v.number(),
-  }).index("by_created", ["createdAt"]),
+  })
+    .index("by_created", ["createdAt"])
+    .index("by_folio_created", ["folio", "createdAt"]),
 
   leads: defineTable({
     name: v.string(),

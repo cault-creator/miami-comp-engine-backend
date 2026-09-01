@@ -51,6 +51,72 @@ function isValuation(v: Valuation | { error: string }): v is Valuation {
   return !(v as { error?: string }).error;
 }
 
+function moneyValue(v: unknown): number | null {
+  const maybe = v as { mostLikely?: unknown } | null;
+  return typeof maybe?.mostLikely === "number" ? maybe.mostLikely : null;
+}
+
+function summarizeCompRun(run: {
+  _id?: unknown;
+  address: string;
+  folio?: string;
+  valuation?: unknown;
+  createdAt: number;
+}) {
+  const valuation = (run.valuation ?? {}) as Partial<Valuation>;
+  return {
+    runId: String(run._id ?? ""),
+    address: run.address,
+    folio: run.folio,
+    createdAt: run.createdAt,
+    mostLikely: moneyValue(run.valuation),
+    retailLow: typeof valuation.retailLow === "number" ? valuation.retailLow : null,
+    retailHigh: typeof valuation.retailHigh === "number" ? valuation.retailHigh : null,
+    confidence: typeof valuation.confidence === "string" ? valuation.confidence : null,
+    condition: typeof valuation.condition === "string" ? valuation.condition : null,
+    micro: typeof valuation.micro === "string" ? valuation.micro : null,
+  };
+}
+
+function buildCompHistory(
+  current: {
+    _id?: unknown;
+    address: string;
+    folio?: string;
+    valuation?: unknown;
+    createdAt: number;
+  },
+  previousRuns: Array<{
+    _id?: unknown;
+    address: string;
+    folio?: string;
+    valuation?: unknown;
+    createdAt: number;
+  }>,
+) {
+  const currentSummary = summarizeCompRun(current);
+  const previous = previousRuns.filter((r) => moneyValue(r.valuation) !== null).map(summarizeCompRun);
+  const prior = previous[0] ?? null;
+  const amount =
+    currentSummary.mostLikely !== null && prior?.mostLikely !== null
+      ? currentSummary.mostLikely - prior.mostLikely
+      : null;
+  return {
+    current: currentSummary,
+    previous,
+    deltaFromPrevious:
+      amount === null || !prior?.mostLikely
+        ? null
+        : {
+            amount,
+            percent: amount / prior.mostLikely,
+            direction: amount > 0 ? "up" : amount < 0 ? "down" : "flat",
+            previousRunId: prior.runId,
+            previousCreatedAt: prior.createdAt,
+          },
+  };
+}
+
 // ---------- Admin (authenticated) ----------
 
 
@@ -66,6 +132,11 @@ export const compAddress = authenticatedAction({
     if (!res.ok) return res;
     const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
     const valuation = valueProperty(res.county, sales, args.conditionTier);
+    const previousRuns = await ctx.runQuery(internal.engine._recentCompRunsByFolio, {
+      folio: res.county.folio,
+      limit: 8,
+    });
+    const createdAt = Date.now();
     const runId = await ctx.runMutation(internal.engine._recordCompRun, {
       kind: "admin",
       address: args.address,
@@ -73,8 +144,18 @@ export const compAddress = authenticatedAction({
       county: res.county,
       valuation,
       createdBy: ctx.userId,
+      createdAt,
     });
-    return { ok: true, county: res.county, valuation, runId };
+    return {
+      ok: true,
+      county: res.county,
+      valuation,
+      runId,
+      compHistory: buildCompHistory(
+        { _id: runId, address: args.address, folio: res.county.folio, valuation, createdAt },
+        previousRuns,
+      ),
+    };
   },
 });
 
@@ -86,6 +167,11 @@ export const compAddressInternal = internalAction({
     if (!res.ok) return res;
     const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
     const valuation = valueProperty(res.county, sales, args.conditionTier);
+    const previousRuns = await ctx.runQuery(internal.engine._recentCompRunsByFolio, {
+      folio: res.county.folio,
+      limit: 8,
+    });
+    const createdAt = Date.now();
     const runId = await ctx.runMutation(internal.engine._recordCompRun, {
       kind: "admin",
       address: args.address,
@@ -93,8 +179,18 @@ export const compAddressInternal = internalAction({
       county: res.county,
       valuation,
       createdBy: "api",
+      createdAt,
     });
-    return { ok: true, county: res.county, valuation, runId };
+    return {
+      ok: true,
+      county: res.county,
+      valuation,
+      runId,
+      compHistory: buildCompHistory(
+        { _id: runId, address: args.address, folio: res.county.folio, valuation, createdAt },
+        previousRuns,
+      ),
+    };
   },
 });
 
@@ -638,9 +734,21 @@ export const _recordCompRun = internalMutation({
     county: v.optional(v.any()),
     valuation: v.optional(v.any()),
     createdBy: v.optional(v.string()),
+    createdAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    return ctx.db.insert("compRuns", { ...args, createdAt: Date.now() });
+    return ctx.db.insert("compRuns", { ...args, createdAt: args.createdAt ?? Date.now() });
+  },
+});
+
+export const _recentCompRunsByFolio = internalQuery({
+  args: { folio: v.string(), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    return ctx.db
+      .query("compRuns")
+      .withIndex("by_folio_created", (q) => q.eq("folio", args.folio))
+      .order("desc")
+      .take(args.limit ?? 8);
   },
 });
 
