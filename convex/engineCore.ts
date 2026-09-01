@@ -288,19 +288,37 @@ export function tierToCondition(tier: string, yearClass: string): string {
   }
 }
 
-function parseSoldDate(s: string): Date | null {
-  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec((s || "").trim());
+export function parseSoldDate(s: string): Date | null {
+  const text = (s || "").trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (iso) return new Date(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(text);
   if (!m) return null;
   const year = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
   return new Date(year, parseInt(m[1], 10) - 1, parseInt(m[2], 10));
 }
 
-const MARKET_MAP: Record<string, string> = {
-  bay_harbor_islands: "Bay Harbor Islands",
-  miami_beach: "Miami Beach",
-  north_miami_keystone: "North Miami",
-  north_bay_village: "North Bay Village",
+const MARKET_ALIASES: Record<string, string[]> = {
+  bay_harbor_islands: ["bay_harbor_islands", "bay harbor islands", "bay harbor"],
+  bal_harbour: ["bal_harbour", "bal harbour", "bal harbor"],
+  miami_beach: ["miami_beach", "miami beach"],
+  north_miami_keystone: ["north_miami_keystone", "keystone", "north miami"],
+  north_bay_village: ["north_bay_village", "north bay village"],
+  surfside: ["surfside"],
 };
+
+function normalizeMarket(s: string): string {
+  return (s || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+}
+
+export function marketMatches(rowMarket: string, subjectMarket: string | null): boolean {
+  if (!subjectMarket) return false;
+  const row = normalizeMarket(rowMarket);
+  const subject = normalizeMarket(subjectMarket);
+  if (row === subject) return true;
+  const aliases = MARKET_ALIASES[subject] ?? [subject];
+  return aliases.map(normalizeMarket).includes(row);
+}
 
 export interface MatchedComp {
   saleId: string;
@@ -345,7 +363,7 @@ export function matchComps(
     // condos only comp against condos, houses against houses
     if ((r.propertyClass ?? "sfr") !== subjectClass) continue;
     let score = 0;
-    const sameMarket = r.market.trim() === (MARKET_MAP[microName || ""] || "");
+    const sameMarket = marketMatches(r.market, microName);
     if (sameMarket) score += 3;
     if (r.waterfront === isWf) score += 2;
     else score -= 2;
