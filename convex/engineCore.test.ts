@@ -178,6 +178,24 @@ test("new_construction tier prices at the new-build band and mentions land + $/S
   assert.deepEqual(result.psfBand, [2100, 2800]); // keystone waterfront new band
   assert.ok(result.reasoning.some((line) => /New construction: land value/.test(line)));
   assert.ok(result.landFloor);
+  // dated comps must NOT drag a new build down to dated $/SF — band pricing wins
+  assert.deepEqual(result.finishedRange, [Math.round(4078 * 2100), Math.round(4078 * 2800)]);
+});
+
+test("new-construction subject prices off new comps when 2+ exist", () => {
+  const result = valueProperty(
+    newBuild,
+    [
+      sale({ saleId: "old-1", market: "keystone" }),
+      sale({ saleId: "new-1", market: "keystone", price: 9000000, livingSF: 4000, conditionClass: "new", yearBuilt: 2023 }),
+      sale({ saleId: "new-2", market: "keystone", price: 10200000, livingSF: 4200, conditionClass: "new", yearBuilt: 2024 }),
+    ],
+    "new_construction",
+  );
+  assert.equal("error" in result, false);
+  if ("error" in result) return;
+  assert.match(result.dataNote ?? "", /Priced from 2 same-market sales/);
+  assert.ok(result.finishedRange![0] > 4078 * 2000); // ~$2250-2428/SF comp range, not the dated ~$800/SF
 });
 
 test("new-construction waterfront subject surfaces dry-lot sales as opt-in support comps", () => {

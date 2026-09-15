@@ -369,10 +369,10 @@ export const salesCount = authenticatedQuery({
 // record. Batched — call repeatedly with increasing offset until done.
 export const backfillSalesYearBuilt = internalAction({
   args: { offset: v.optional(v.number()), limit: v.optional(v.number()) },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<any> => {
     const offset = args.offset ?? 0;
     const limit = Math.min(args.limit ?? 15, 25);
-    const all = await ctx.runQuery(internal.engine._loadSalesInternal, {});
+    const all: any[] = await ctx.runQuery(internal.engine._loadSalesInternal, {});
     const batch = all
       .filter((r: any) => r.yearBuilt == null || r.lotSF == null)
       .slice(offset, offset + limit);
@@ -424,10 +424,7 @@ export const getHomeValue = action({
     const res = await resolveCounty(args.address, args.folio);
     if (!res.ok) return res;
     const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
-    const valuation = valueProperty(res.county, sales, args.conditionTier, {
-      includeSupportIds: args.includeSupportIds,
-      excludeSaleIds: args.excludeSaleIds,
-    });
+    const valuation = valueProperty(res.county, sales, args.conditionTier);
     if (!isValuation(valuation)) return { ok: false, error: valuation.error };
     const readout = consumerReadout(valuation);
     await ctx.runMutation(internal.engine._recordCompRun, {

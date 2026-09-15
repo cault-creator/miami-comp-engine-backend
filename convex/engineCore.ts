@@ -793,8 +793,15 @@ export function valueProperty(
   const comps = compEval.selected;
   // Comp-weighted pricing: with 2+ same-market comps, actual sold $/SF beats
   // static bands — that's the "dialed-in" value. Bands remain the fallback.
-  const compPsfs = comps
-    .filter((c) => c.sameMarket && c.psf >= 150)
+  // New-construction subjects: only new/newer sales can set the $/SF —
+  // dated comp pricing would undervalue a new build, so the new-build band
+  // stays in play unless there are 2+ genuinely comparable new sales.
+  const isNewerComp = (c: MatchedComp) =>
+    /new/i.test(c.cond) || (c.yearBuilt != null && c.yearBuilt >= 2015);
+  const compPool =
+    cond === "new" ? comps.filter((c) => c.sameMarket && isNewerComp(c)) : comps.filter((c) => c.sameMarket);
+  const compPsfs = compPool
+    .filter((c) => c.psf >= 150)
     .map((c) => c.psf)
     .sort((a, b) => a - b);
   // interpolated percentile
