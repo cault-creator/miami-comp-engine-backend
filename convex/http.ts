@@ -211,6 +211,12 @@ http.route({
       address: String(body.address),
       conditionTier: body.conditionTier ? String(body.conditionTier) : undefined,
       folio: typeof body.folio === "string" ? body.folio : undefined,
+      includeSupportIds: Array.isArray(body.includeSupportIds)
+        ? body.includeSupportIds.map(String)
+        : undefined,
+      excludeSaleIds: Array.isArray(body.excludeSaleIds)
+        ? body.excludeSaleIds.map(String)
+        : undefined,
     });
     return json(result);
   }),

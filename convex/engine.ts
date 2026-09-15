@@ -126,12 +126,21 @@ async function resolveCounty(address: string, folio?: string) {
 }
 
 export const compAddress = authenticatedAction({
-  args: { address: v.string(), conditionTier: v.optional(v.string()), folio: v.optional(v.string()) },
+  args: {
+    address: v.string(),
+    conditionTier: v.optional(v.string()),
+    folio: v.optional(v.string()),
+    includeSupportIds: v.optional(v.array(v.string())),
+    excludeSaleIds: v.optional(v.array(v.string())),
+  },
   handler: async (ctx, args): Promise<any> => {
     const res = await resolveCounty(args.address, args.folio);
     if (!res.ok) return res;
     const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
-    const valuation = valueProperty(res.county, sales, args.conditionTier);
+    const valuation = valueProperty(res.county, sales, args.conditionTier, {
+      includeSupportIds: args.includeSupportIds,
+      excludeSaleIds: args.excludeSaleIds,
+    });
     const previousRuns = await ctx.runQuery(internal.engine._recentCompRunsByFolio, {
       folio: res.county.folio,
       limit: 8,
@@ -161,12 +170,21 @@ export const compAddress = authenticatedAction({
 
 // Secret-key-gated variant for the HTTP API (calebault.com admin comp tool).
 export const compAddressInternal = internalAction({
-  args: { address: v.string(), conditionTier: v.optional(v.string()), folio: v.optional(v.string()) },
+  args: {
+    address: v.string(),
+    conditionTier: v.optional(v.string()),
+    folio: v.optional(v.string()),
+    includeSupportIds: v.optional(v.array(v.string())),
+    excludeSaleIds: v.optional(v.array(v.string())),
+  },
   handler: async (ctx, args): Promise<any> => {
     const res = await resolveCounty(args.address, args.folio);
     if (!res.ok) return res;
     const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
-    const valuation = valueProperty(res.county, sales, args.conditionTier);
+    const valuation = valueProperty(res.county, sales, args.conditionTier, {
+      includeSupportIds: args.includeSupportIds,
+      excludeSaleIds: args.excludeSaleIds,
+    });
     const previousRuns = await ctx.runQuery(internal.engine._recentCompRunsByFolio, {
       folio: res.county.folio,
       limit: 8,
@@ -290,6 +308,7 @@ export const _importSales = internalMutation({
         baths: v.optional(v.union(v.number(), v.null())),
         livingSF: v.number(),
         lotSF: v.optional(v.union(v.number(), v.null())),
+        yearBuilt: v.optional(v.union(v.number(), v.null())),
         waterfront: v.boolean(),
         waterType: v.string(),
         conditionClass: v.string(),
@@ -320,6 +339,8 @@ export const _updateSale = internalMutation({
     conditionClass: v.optional(v.string()),
     verified: v.optional(v.boolean()),
     propertyClass: v.optional(v.string()),
+    yearBuilt: v.optional(v.union(v.number(), v.null())),
+    lotSF: v.optional(v.union(v.number(), v.null())),
   },
   handler: async (ctx, args) => {
     const row = await ctx.db
@@ -332,6 +353,8 @@ export const _updateSale = internalMutation({
     if (args.conditionClass !== undefined) patch.conditionClass = args.conditionClass;
     if (args.verified !== undefined) patch.verified = args.verified;
     if (args.propertyClass !== undefined) patch.propertyClass = args.propertyClass;
+    if (args.yearBuilt !== undefined) patch.yearBuilt = args.yearBuilt;
+    if (args.lotSF !== undefined) patch.lotSF = args.lotSF;
     await ctx.db.patch(row._id, patch);
     return { updated: true };
   },
@@ -340,6 +363,50 @@ export const _updateSale = internalMutation({
 export const salesCount = authenticatedQuery({
   args: {},
   handler: async (ctx) => (await ctx.db.query("sales").collect()).length,
+});
+
+// Backfill yearBuilt (and missing lotSF) on sale rows from the county PA
+// record. Batched — call repeatedly with increasing offset until done.
+export const backfillSalesYearBuilt = internalAction({
+  args: { offset: v.optional(v.number()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const offset = args.offset ?? 0;
+    const limit = Math.min(args.limit ?? 15, 25);
+    const all = await ctx.runQuery(internal.engine._loadSalesInternal, {});
+    const batch = all
+      .filter((r: any) => r.yearBuilt == null || r.lotSF == null)
+      .slice(offset, offset + limit);
+    const results: { address: string; ok: boolean; detail: string }[] = [];
+    for (const row of batch) {
+      const clean = String(row.address).replace(/,.*$/, "").trim();
+      try {
+        const res = await fetchCountyByAddress(clean);
+        if (!res.ok) {
+          results.push({ address: row.address, ok: false, detail: res.error });
+          continue;
+        }
+        await ctx.runMutation(internal.engine._updateSale, {
+          saleId: row.saleId,
+          yearBuilt: res.county.yearBuilt,
+          lotSF: row.lotSF == null ? res.county.lotSF : undefined,
+        });
+        results.push({
+          address: row.address,
+          ok: true,
+          detail: `yearBuilt=${res.county.yearBuilt ?? "?"} lotSF=${res.county.lotSF ?? "?"}`,
+        });
+      } catch (e: any) {
+        results.push({ address: row.address, ok: false, detail: String(e?.message ?? e) });
+      }
+    }
+    return {
+      processed: batch.length,
+      offset,
+      nextOffset: offset + limit,
+      remaining: all.filter((r: any) => r.yearBuilt == null || r.lotSF == null).length - batch.length,
+      results,
+    };
+  },
 });
 
 // ---------- Consumer (deliberately public) ----------
@@ -357,7 +424,10 @@ export const getHomeValue = action({
     const res = await resolveCounty(args.address, args.folio);
     if (!res.ok) return res;
     const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
-    const valuation = valueProperty(res.county, sales, args.conditionTier);
+    const valuation = valueProperty(res.county, sales, args.conditionTier, {
+      includeSupportIds: args.includeSupportIds,
+      excludeSaleIds: args.excludeSaleIds,
+    });
     if (!isValuation(valuation)) return { ok: false, error: valuation.error };
     const readout = consumerReadout(valuation);
     await ctx.runMutation(internal.engine._recordCompRun, {
