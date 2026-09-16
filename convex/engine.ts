@@ -378,11 +378,27 @@ export const backfillSalesYearBuilt = internalAction({
       .slice(offset, offset + limit);
     const results: { address: string; ok: boolean; detail: string }[] = [];
     for (const row of batch) {
-      const clean = String(row.address).replace(/,.*$/, "").trim();
+      const clean = String(row.address)
+        .replace(/,.*$/, "")
+        .replace(/\s+(PH\s*-.*|#.*|UNIT\s.*)$/i, "")
+        .trim();
+      const ZIP_CITIES: Record<string, string[]> = {
+        "33139": ["Miami Beach"],
+        "33140": ["Miami Beach"],
+        "33141": ["Miami Beach"],
+        "33154": ["Bay Harbor Islands", "Surfside", "Bal Harbour"],
+        "33181": ["North Miami"],
+      };
+      const zip = String(row.zip ?? "");
+      const attempts = [clean, ...(ZIP_CITIES[zip] ?? []).map((c) => `${clean}, ${c}, FL ${zip}`)];
       try {
-        const res = await fetchCountyByAddress(clean);
-        if (!res.ok) {
-          results.push({ address: row.address, ok: false, detail: res.error });
+        let res: any = null;
+        for (const attempt of attempts) {
+          res = await fetchCountyByAddress(attempt);
+          if (res.ok) break;
+        }
+        if (!res?.ok) {
+          results.push({ address: row.address, ok: false, detail: res?.error ?? "no county match" });
           continue;
         }
         await ctx.runMutation(internal.engine._updateSale, {
