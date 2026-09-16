@@ -40,6 +40,7 @@ async function loadSales(ctx: {
     conditionClass: r.conditionClass,
     verified: r.verified,
     source: r.source,
+    yearBuilt: r.yearBuilt ?? null,
     propertyClass:
       r.propertyClass === "condo" || r.propertyClass === "sfr"
         ? r.propertyClass
@@ -336,6 +337,7 @@ export const _updateSale = internalMutation({
   args: {
     saleId: v.string(),
     waterType: v.optional(v.string()),
+    waterfront: v.optional(v.boolean()),
     conditionClass: v.optional(v.string()),
     verified: v.optional(v.boolean()),
     propertyClass: v.optional(v.string()),
@@ -350,6 +352,7 @@ export const _updateSale = internalMutation({
     if (!row) return { updated: false };
     const patch: Record<string, unknown> = {};
     if (args.waterType !== undefined) patch.waterType = args.waterType;
+    if (args.waterfront !== undefined) patch.waterfront = args.waterfront;
     if (args.conditionClass !== undefined) patch.conditionClass = args.conditionClass;
     if (args.verified !== undefined) patch.verified = args.verified;
     if (args.propertyClass !== undefined) patch.propertyClass = args.propertyClass;
@@ -357,6 +360,19 @@ export const _updateSale = internalMutation({
     if (args.lotSF !== undefined) patch.lotSF = args.lotSF;
     await ctx.db.patch(row._id, patch);
     return { updated: true };
+  },
+});
+
+export const _deleteSale = internalMutation({
+  args: { saleId: v.string() },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("sales")
+      .withIndex("by_saleId", (q) => q.eq("saleId", args.saleId))
+      .first();
+    if (!row) return { deleted: false };
+    await ctx.db.delete(row._id);
+    return { deleted: true };
   },
 });
 

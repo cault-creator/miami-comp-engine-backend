@@ -305,7 +305,7 @@ const MARKET_ALIASES: Record<string, string[]> = {
   bay_harbor_islands: ["bay_harbor_islands", "bay harbor islands", "bay harbor"],
   bal_harbour: ["bal_harbour", "bal harbour", "bal harbor"],
   miami_beach: ["miami_beach", "miami beach"],
-  north_miami_keystone: ["north_miami_keystone", "keystone", "north miami"],
+  north_miami_keystone: ["north_miami_keystone", "keystone", "north miami", "keystone islands / n miami", "keystone islands"],
   north_bay_village: ["north_bay_village", "north bay village"],
   surfside: ["surfside"],
 };
@@ -649,6 +649,24 @@ export function evaluateComps(
   }
   out.sort((a, b) => b.score - a.score || a.address.localeCompare(b.address));
   support.sort((a, b) => b.score - a.score || a.address.localeCompare(b.address));
+  // address-level dedupe: repeat imports of the same sale (e.g. PropStream +
+  // manual paste) must not take two selection/support slots
+  const normAddr = (a: string) => a.toLowerCase().replace(/,.*$/, "").replace(/\s+/g, " ").trim();
+  const dedupeBy = <T extends { address: string }>(list: T[]): T[] => {
+    const seen = new Set<string>();
+    return list.filter((c) => {
+      const k = normAddr(c.address);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+  const dedupedOut = dedupeBy(out);
+  out.length = 0;
+  out.push(...dedupedOut);
+  const dedupedSupport = dedupeBy(support);
+  support.length = 0;
+  support.push(...dedupedSupport);
   let selected = out.slice(0, topN);
   if (subjectTier !== "dry") {
     // reviewer-included dry support comps always survive the tier preference
@@ -660,9 +678,26 @@ export function evaluateComps(
       selected = [...forced, ...tierMatched].slice(0, Math.max(topN, forced.length));
     }
   }
+  // Solid comps that missed the cut stay visible as exclusions with their
+  // score — answers "why wasn't this comp used?" instead of vanishing.
+  const selectedIds = new Set(selected.map((c) => c.saleId));
+  for (const c of out) {
+    if (selectedIds.has(c.saleId)) continue;
+    excluded.push({
+      saleId: c.saleId,
+      address: c.address,
+      price: c.price,
+      sf: c.sf,
+      psf: c.psf,
+      sold: c.sold,
+      reason: `solid comp (score ${c.score}) — outranked by the ${selected.length} selected comps`,
+      reasons: [...c.reasons, ...c.warnings],
+      score: c.score,
+      sameMarket: c.sameMarket,
+    });
+  }
   // Rank exclusions by relevance (same market, then score, then price) instead
   // of raw insertion order, and dedupe repeat imports of the same address.
-  const normAddr = (a: string) => a.toLowerCase().replace(/,.*$/, "").replace(/\s+/g, " ").trim();
   const seenAddr = new Set<string>();
   const rankedExcluded = [...excluded]
     .sort(

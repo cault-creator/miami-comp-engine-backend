@@ -4,6 +4,7 @@ import {
   detectMicroMarket,
   detectWaterfront,
   marketMatches,
+  evaluateComps,
   matchComps,
   parseSoldDate,
   valueProperty,
@@ -105,9 +106,9 @@ test("matchComps filters property class and rewards same-market waterfront comps
 
 test("valueProperty can price Maple Rd from same-market imported sales", () => {
   const result = valueProperty(maple, [
-    sale({ saleId: "same-1", price: 5000000, livingSF: 2600, market: "keystone" }),
-    sale({ saleId: "same-2", price: 5400000, livingSF: 2700, market: "North Miami" }),
-    sale({ saleId: "other", price: 7000000, livingSF: 3000, market: "miami_beach" }),
+    sale({ saleId: "same-1", address: "100 Keystone Blvd", price: 5000000, livingSF: 2600, market: "keystone" }),
+    sale({ saleId: "same-2", address: "200 Keystone Blvd", price: 5400000, livingSF: 2700, market: "North Miami" }),
+    sale({ saleId: "other", address: "300 Beach Ave", price: 7000000, livingSF: 3000, market: "miami_beach" }),
   ]);
 
   assert.equal("error" in result, false);
@@ -186,9 +187,9 @@ test("new-construction subject prices off new comps when 2+ exist", () => {
   const result = valueProperty(
     newBuild,
     [
-      sale({ saleId: "old-1", market: "keystone" }),
-      sale({ saleId: "new-1", market: "keystone", price: 9000000, livingSF: 4000, conditionClass: "new", yearBuilt: 2023 }),
-      sale({ saleId: "new-2", market: "keystone", price: 10200000, livingSF: 4200, conditionClass: "new", yearBuilt: 2024 }),
+      sale({ saleId: "old-1", address: "400 Keystone Blvd", market: "keystone" }),
+      sale({ saleId: "new-1", address: "500 Keystone Blvd", market: "keystone", price: 9000000, livingSF: 4000, conditionClass: "new", yearBuilt: 2023 }),
+      sale({ saleId: "new-2", address: "600 Keystone Blvd", market: "keystone", price: 10200000, livingSF: 4200, conditionClass: "new", yearBuilt: 2024 }),
     ],
     "new_construction",
   );
@@ -288,4 +289,17 @@ test("excluded comps are ranked by relevance, not insertion order, and deduped",
   assert.equal(result.excludedComps.filter((c) => c.address.startsWith("2310 Bayview Ln")).length, 1);
   // scores are attached so the UI can show how close a miss was
   assert.equal(typeof dryExclusions[0]?.score, "number");
+});
+
+test("solid comps that miss the top-N cut stay visible as exclusions with scores", () => {
+  const sales = Array.from({ length: 7 }, (_, i) =>
+    sale({ saleId: `wf-${i}`, address: `${100 + i} Keystone Blvd`, price: 5000000 + i * 100000 }),
+  );
+  const result = evaluateComps(sales, true, "dated", "north_miami_keystone", 5, "sfr", "canal");
+  assert.equal(result.selected.length, 5);
+  const overflow = result.excluded.filter((c) => /outranked/.test(c.reason));
+  assert.equal(overflow.length, 2);
+  assert.equal(typeof overflow[0]?.score, "number");
+  // every sale is accounted for: selected + excluded
+  assert.equal(result.selected.length + result.excluded.length, sales.length);
 });
