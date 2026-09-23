@@ -19,6 +19,7 @@ import {
   offerTeamEmail,
 } from "./emails";
 import type { Doc } from "./_generated/dataModel";
+import { buildCompHistory } from "./compHistory";
 
 async function loadSales(ctx: {
   db: { query: (t: "sales") => any };
@@ -50,72 +51,6 @@ async function loadSales(ctx: {
 
 function isValuation(v: Valuation | { error: string }): v is Valuation {
   return !(v as { error?: string }).error;
-}
-
-function moneyValue(v: unknown): number | null {
-  const maybe = v as { mostLikely?: unknown } | null;
-  return typeof maybe?.mostLikely === "number" ? maybe.mostLikely : null;
-}
-
-function summarizeCompRun(run: {
-  _id?: unknown;
-  address: string;
-  folio?: string;
-  valuation?: unknown;
-  createdAt: number;
-}) {
-  const valuation = (run.valuation ?? {}) as Partial<Valuation>;
-  return {
-    runId: String(run._id ?? ""),
-    address: run.address,
-    folio: run.folio,
-    createdAt: run.createdAt,
-    mostLikely: moneyValue(run.valuation),
-    retailLow: typeof valuation.retailLow === "number" ? valuation.retailLow : null,
-    retailHigh: typeof valuation.retailHigh === "number" ? valuation.retailHigh : null,
-    confidence: typeof valuation.confidence === "string" ? valuation.confidence : null,
-    condition: typeof valuation.condition === "string" ? valuation.condition : null,
-    micro: typeof valuation.micro === "string" ? valuation.micro : null,
-  };
-}
-
-function buildCompHistory(
-  current: {
-    _id?: unknown;
-    address: string;
-    folio?: string;
-    valuation?: unknown;
-    createdAt: number;
-  },
-  previousRuns: Array<{
-    _id?: unknown;
-    address: string;
-    folio?: string;
-    valuation?: unknown;
-    createdAt: number;
-  }>,
-) {
-  const currentSummary = summarizeCompRun(current);
-  const previous = previousRuns.filter((r) => moneyValue(r.valuation) !== null).map(summarizeCompRun);
-  const prior = previous[0] ?? null;
-  const amount =
-    currentSummary.mostLikely !== null && prior?.mostLikely !== null
-      ? currentSummary.mostLikely - prior.mostLikely
-      : null;
-  return {
-    current: currentSummary,
-    previous,
-    deltaFromPrevious:
-      amount === null || !prior?.mostLikely
-        ? null
-        : {
-            amount,
-            percent: amount / prior.mostLikely,
-            direction: amount > 0 ? "up" : amount < 0 ? "down" : "flat",
-            previousRunId: prior.runId,
-            previousCreatedAt: prior.createdAt,
-          },
-  };
 }
 
 // ---------- Admin (authenticated) ----------
