@@ -294,11 +294,14 @@ export function tierToCondition(tier: string, yearClass: string): string {
 export function parseSoldDate(s: string): Date | null {
   const text = (s || "").trim();
   const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-  if (iso) return new Date(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
   const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(text);
-  if (!m) return null;
-  const year = m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10);
-  return new Date(year, parseInt(m[1], 10) - 1, parseInt(m[2], 10));
+  if (!iso && !m) return null;
+  const year = iso ? Number(iso[1]) : m![3].length === 2 ? 2000 + Number(m![3]) : Number(m![3]);
+  const month = Number(iso ? iso[2] : m![1]);
+  const day = Number(iso ? iso[3] : m![2]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+    ? date : null;
 }
 
 const MARKET_ALIASES: Record<string, string[]> = {
@@ -459,6 +462,11 @@ export function evaluateComps(
       exclude(r, "missing sale price or living area", undefined, null, sameMarket);
       continue;
     }
+    const saleDate = parseSoldDate(r.soldDate);
+    if (!saleDate || saleDate.getTime() > today.getTime()) {
+      exclude(r, "missing, invalid, or future sale date", undefined, null, sameMarket);
+      continue;
+    }
     // garbage rows (partial-interest transfers, data errors) never comp
     const psf = r.price / r.livingSF;
     if (r.price < 100_000 || psf < 150) {
@@ -504,7 +512,7 @@ export function evaluateComps(
       warnings.push("outside subject micro-market");
     }
     score += 3;
-    reasons.push(isWf ? "waterfront sale" : "dry-lot sale");
+    reasons.push(r.waterfront ? "waterfront sale" : "dry-lot sale");
     // water-tier match: canal sales don't price open-bay trophy and vice versa
     if (subjectTier !== "dry" && rowTier !== "dry") {
       if (rowTier === subjectTier) {
@@ -793,8 +801,7 @@ export function valueProperty(
   const teardown =
     !isCondo &&
     (conditionTier === "teardown" ||
-      conditionTier === "new_dev" ||
-      (cond === "dated" && (county.beds || 3) <= 2));
+      conditionTier === "new_dev");
   if (teardown && landFloor) {
     finished = [landFloor[0], Math.round(landFloor[1] * 1.2)];
   }
@@ -868,7 +875,7 @@ export function valueProperty(
   const round10k = (n: number) => Math.round(n / 10000) * 10000;
   const verifiedN = comps.filter((c) => c.verified).length;
   const sameMarketN = comps.filter((c) => c.sameMarket).length;
-  const conf = isCondo
+  const conf = verifiedN === 0 ? "C" : isCondo
     ? verifiedN >= 2
       ? "B"
       : "C"

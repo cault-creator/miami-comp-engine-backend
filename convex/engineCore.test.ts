@@ -116,7 +116,7 @@ test("valueProperty can price Maple Rd from same-market imported sales", () => {
   assert.equal(result.micro, "north_miami_keystone");
   assert.equal(result.waterfront, true);
   assert.match(result.dataNote ?? "", /Priced from 2 same-market sales/);
-  assert.notEqual(result.confidence, "C");
+  assert.equal(result.confidence, "C"); // unverified comps cannot earn B confidence
   assert.ok(result.reasoning.length >= 3);
   assert.equal(result.compSummary.sameMarketCount, 2);
 });

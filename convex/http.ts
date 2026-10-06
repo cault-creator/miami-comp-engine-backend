@@ -23,7 +23,7 @@ const json = (data: unknown, status = 200) =>
 
 const preflight = httpAction(async () => new Response(null, { status: 204, headers: CORS }));
 
-for (const path of ["/api/value", "/api/lead", "/api/track", "/api/offer", "/api/offer-notified", "/api/comp", "/api/report"]) {
+for (const path of ["/api/value", "/api/lead", "/api/track", "/api/offer", "/api/offer-notified", "/api/comp", "/api/analyze", "/api/report"]) {
   http.route({ path, method: "OPTIONS", handler: preflight });
 }
 
@@ -223,6 +223,24 @@ http.route({
 });
 
 // Public: fetch a saved report by token (for shareable report pages).
+// Admin V2: seller / buyer / investor explanations and gated offer numbers.
+http.route({
+  path: "/api/analyze", method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const expected = process.env.ENGINE_API_KEY ?? "";
+    if (!expected || req.headers.get("x-engine-key") !== expected) return json({ ok: false, error: "unauthorized" }, 401);
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body.address !== "string" || !body.address.trim() || !body.input || typeof body.input !== "object" || Array.isArray(body.input))
+      return json({ ok: false, error: "address and input object required" }, 400);
+    // Convex's strict nested validator rejects unexpected fields and wrong types.
+    const result = await ctx.runAction(internal.engine.analyzeAddressInternal, {
+      address: body.address, folio: typeof body.folio === "string" ? body.folio : undefined,
+      conditionTier: typeof body.conditionTier === "string" ? body.conditionTier : undefined, input: body.input,
+    });
+    return json(result);
+  }),
+});
+
 http.route({
   path: "/api/report",
   method: "GET",

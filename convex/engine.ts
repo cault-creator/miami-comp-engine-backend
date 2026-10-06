@@ -20,6 +20,8 @@ import {
 } from "./emails";
 import type { Doc } from "./_generated/dataModel";
 import { buildCompHistory } from "./compHistory";
+import { analyzeProperty } from "./analysisCore";
+import { analysisInputValidator } from "./analysisValidators";
 
 async function loadSales(ctx: {
   db: { query: (t: "sales") => any };
@@ -145,6 +147,31 @@ export const compAddressInternal = internalAction({
         previousRuns,
       ),
     };
+  },
+});
+
+// V2 requires explicit evidence and underwriting inputs. The snapshot and
+// budget travel with the immutable comp run; no independent guessed prices.
+export const analyzeAddressInternal = internalAction({
+  args: { address: v.string(), folio: v.optional(v.string()), conditionTier: v.optional(v.string()),
+    input: analysisInputValidator },
+  handler: async (ctx, args): Promise<any> => {
+    const res = await resolveCounty(args.address, args.folio);
+    if (!res.ok) return res;
+    const sales = await ctx.runQuery(internal.engine._loadSalesInternal, {});
+    const valuation = valueProperty(res.county, sales, args.conditionTier);
+    const createdAt = Date.now();
+    const analysis = analyzeProperty(res.county, valuation, args.input, new Date(createdAt));
+    const previousRuns = await ctx.runQuery(internal.engine._recentCompRunsByFolio, { folio: res.county.folio, limit: 8 });
+    const runId = await ctx.runMutation(internal.engine._recordCompRun, {
+      kind: "analysis_v2", address: args.address, folio: res.county.folio, county: res.county,
+      valuation: { ...valuation, analysis }, createdBy: "api", createdAt,
+    });
+    return { ok: true, county: res.county, analysis, runId,
+      // V1 retail evidence remains available; suppress its heuristic offer ladder here.
+      valuation: "error" in valuation ? valuation : { ...valuation, offers: null },
+      compHistory: buildCompHistory({ _id: runId, address: args.address, folio: res.county.folio,
+        valuation, createdAt }, previousRuns) };
   },
 });
 
