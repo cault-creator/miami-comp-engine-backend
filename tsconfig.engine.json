@@ -1,0 +1,5 @@
+{
+  "extends": "./convex/tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["convex/engineCore.ts", "convex/engineCore.test.ts", "convex/compHistory.ts", "convex/compHistory.test.ts", "convex/analysisCore.ts", "convex/analysisCore.test.ts", "convex/analysisValidators.ts"]
+}
